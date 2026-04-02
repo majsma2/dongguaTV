@@ -81,6 +81,34 @@
         </div>
 
         <div v-if="!searched">
+            <!-- 观看记录 -->
+            <div class="section-container animate__animated animate__fadeInUp watch-history-section" v-if="watchHistoryList.length > 0">
+                <div class="section-header">
+                    <div class="section-line"></div>
+                    <div class="section-title"><i class="fas fa-history"></i> 观看记录</div>
+                    <div class="hot-row-nav">
+                        <button type="button" class="nav-btn nav-prev" @click="scrollHotRow('history', 'prev')"><i class="fas fa-chevron-left"></i></button>
+                        <button type="button" class="nav-btn nav-next" @click="scrollHotRow('history', 'next')"><i class="fas fa-chevron-right"></i></button>
+                    </div>
+                </div>
+                <div class="hot-row" data-section="history">
+                    <div class="hot-card history-card" v-for="(h, idx) in watchHistoryList" :key="h.name + idx"
+                        @click="continueFromHistory(h)">
+                        <button type="button" class="history-remove" title="移除" @click.stop="removeHistoryItem(h.name)"><i class="fas fa-times"></i></button>
+                        <div class="poster-wrap">
+                            <img v-if="h.poster && !h.poster.includes('mac_default')" :src="h.poster" referrerpolicy="no-referrer" loading="lazy" @error="historyPosterError(h)">
+                            <div v-else class="poster-fallback history-poster-fallback">
+                                <i class="fas fa-film mb-2 opacity-50"></i>
+                                <div class="text-truncate px-1" style="font-size:11px;color:#888;max-width:100%">{{ h.name }}</div>
+                            </div>
+                            <div class="history-ep-badge">{{ h.epLabel || ('第' + (h.epIndex + 1) + '集') }}</div>
+                        </div>
+                        <div class="movie-name text-truncate" :title="h.name">{{ h.name }}</div>
+                        <div class="movie-date history-sub">继续观看</div>
+                    </div>
+                </div>
+            </div>
+
             <!-- 3. TMDb Movies -->
             <div class="section-container animate__animated animate__fadeInUp" v-if="movieList.length > 0">
                 <div class="section-header">
@@ -310,7 +338,7 @@
         const { createApp, reactive } = Vue;
         // 使用你的反代域名
         const MY_PROXY = "https://daili.smdhb.com";
-        const TMDB_API_KEY = "你的tmdb api key"; 
+        const TMDB_API_KEY = "替换成你自己的KEY"; 
 
         // API地址修改为你的反代
         const TMDB_BASE_URL = `${MY_PROXY}/3`;
@@ -324,6 +352,8 @@
             const hotRows = document.querySelectorAll('.hot-row');
             
             hotRows.forEach(row => {
+                if (row.dataset.hotSwipeInited) return;
+                row.dataset.hotSwipeInited = '1';
                 let isDown = false;
                 let startX;
                 let scrollLeft;
@@ -466,11 +496,15 @@
                     imageMap: {}, fallbackMap: {}, heroList: [], scrollY: 0,
                     hotList: [],
                     skipIntroEnd: 0, skipOutroFromEnd: 0, skipAutoIntro: true, skipAutoOutro: true,
-                    autoPlayNext: true
+                    autoPlayNext: true,
+                    /** 从地址栏 ?ep= 恢复选集时暂存，parseEpisodes 消费后置 null */
+                    pendingEpisodeIndex: null,
+                    watchHistoryList: []
                 }
             },
             mounted() {
                 this.loadAutoPlayNextPref();
+                this.loadWatchHistory();
                 window.addEventListener('scroll', () => { this.scrollY = window.scrollY; });
                 this.fetchHero();
                 this.fetchAllLists();
@@ -479,6 +513,7 @@
                 this.$nextTick(() => {
                     initHotRowSwipe();
                     this.initHotRowNavStates();
+                    this.restoreWatchFromUrl();
                 });
             },
             computed: {
@@ -591,6 +626,197 @@
                         localStorage.setItem('dongguaTV_auto_next', this.autoPlayNext ? '1' : '0');
                     } catch (e) { }
                 },
+                /** 地址栏记录当前剧集，刷新后可 restoreWatchFromUrl 恢复 */
+                syncWatchUrlFromGroup() {
+                    if (!this.showDetail || !this.currentGroup?.name) return;
+                    const src = this.currentSource || this.currentGroup.sources[0];
+                    if (!src || !src.site_key || src.vod_id == null || src.vod_id === '') return;
+                    const params = new URLSearchParams();
+                    params.set('watch', this.currentGroup.name);
+                    params.set('site', src.site_key);
+                    params.set('vid', String(src.vod_id));
+                    let epIdx = 0;
+                    if (this.episodeList.length && this.currentUrl) {
+                        const i = this.episodeList.findIndex((ep) => ep.url === this.currentUrl);
+                        if (i >= 0) epIdx = i;
+                    }
+                    params.set('ep', String(epIdx));
+                    const q = params.toString();
+                    const url = `${location.pathname}?${q}`;
+                    history.replaceState({ dongguaWatch: 1 }, '', url);
+                    this.saveWatchHistoryEntry();
+                },
+                loadWatchHistory() {
+                    try {
+                        const raw = localStorage.getItem('dongguaTV_watch_history_v1');
+                        this.watchHistoryList = raw ? JSON.parse(raw) : [];
+                        if (!Array.isArray(this.watchHistoryList)) this.watchHistoryList = [];
+                    } catch (e) {
+                        this.watchHistoryList = [];
+                    }
+                },
+                saveWatchHistoryEntry() {
+                    if (!this.showDetail || !this.currentGroup?.name) return;
+                    const src = this.currentSource || this.currentGroup.sources[0];
+                    if (!src || !src.site_key || src.vod_id == null || src.vod_id === '') return;
+                    let epIdx = 0;
+                    let epLabel = '';
+                    if (this.episodeList.length && this.currentUrl) {
+                        const i = this.episodeList.findIndex((ep) => ep.url === this.currentUrl);
+                        if (i >= 0) {
+                            epIdx = i;
+                            epLabel = (this.episodeList[i].name && String(this.episodeList[i].name).trim())
+                                ? this.episodeList[i].name
+                                : ('第' + (i + 1) + '集');
+                        }
+                    }
+                    if (!epLabel) epLabel = this.episodeList.length ? '第1集' : '正片';
+                    const entry = {
+                        name: this.currentGroup.name,
+                        site_key: src.site_key,
+                        vod_id: String(src.vod_id),
+                        epIndex: epIdx,
+                        epLabel,
+                        poster: this.resolveHistoryPoster(src),
+                        at: Date.now()
+                    };
+                    try {
+                        let list = [];
+                        try {
+                            list = JSON.parse(localStorage.getItem('dongguaTV_watch_history_v1') || '[]');
+                        } catch (e2) { list = []; }
+                        if (!Array.isArray(list)) list = [];
+                        const others = list.filter((x) => x && x.name !== entry.name);
+                        this.watchHistoryList = [entry, ...others].slice(0, 40);
+                        localStorage.setItem('dongguaTV_watch_history_v1', JSON.stringify(this.watchHistoryList));
+                    } catch (e) { }
+                    this.$nextTick(() => {
+                        initHotRowSwipe();
+                        this.initHotRowNavStates();
+                    });
+                },
+                removeHistoryItem(name) {
+                    this.watchHistoryList = this.watchHistoryList.filter((x) => x.name !== name);
+                    try {
+                        localStorage.setItem('dongguaTV_watch_history_v1', JSON.stringify(this.watchHistoryList));
+                    } catch (e) { }
+                },
+                historyPosterError(h) {
+                    if (h && typeof h === 'object') h.poster = '';
+                },
+                /** 与搜索结果卡片一致：优先 TMDb 回填的 imageMap，其次聚合封面与各源 vod_pic */
+                resolveHistoryPoster(src) {
+                    const name = this.currentGroup?.name;
+                    const bad = (u) => !u || u.includes('mac_default') || u.includes('nopic');
+                    let poster = name && this.imageMap[name] ? this.imageMap[name] : '';
+                    if (bad(poster) && this.currentGroup?.pic) poster = this.currentGroup.pic;
+                    if (bad(poster) && src?.vod_pic) poster = src.vod_pic;
+                    if (bad(poster) && this.currentGroup?.sources?.length) {
+                        for (const s of this.currentGroup.sources) {
+                            if (s.vod_pic && !bad(s.vod_pic)) {
+                                poster = s.vod_pic;
+                                break;
+                            }
+                        }
+                    }
+                    return bad(poster) ? '' : poster;
+                },
+                patchWatchHistoryPoster(name) {
+                    const url = this.imageMap[name];
+                    if (!url || !name) return;
+                    let changed = false;
+                    this.watchHistoryList = this.watchHistoryList.map((h) => {
+                        if (h.name !== name) return h;
+                        const old = h.poster || '';
+                        if (old && !old.includes('mac_default') && !old.includes('nopic')) return h;
+                        changed = true;
+                        return { ...h, poster: url };
+                    });
+                    if (changed) {
+                        try {
+                            localStorage.setItem('dongguaTV_watch_history_v1', JSON.stringify(this.watchHistoryList));
+                        } catch (e) { }
+                    }
+                },
+                async continueFromHistory(h) {
+                    if (!h || !h.name) return;
+                    this.keyword = h.name;
+                    this.searched = true;
+                    this.pendingEpisodeIndex = typeof h.epIndex === 'number' ? h.epIndex : null;
+                    await this.doSearch();
+                    await this.$nextTick();
+                    const g = this.groupedList.find((x) => x.name === h.name);
+                    if (g) {
+                        this.openDetail(g, { site_key: h.site_key, vod_id: h.vod_id });
+                        return;
+                    }
+                    const fallback = {
+                        name: h.name,
+                        pic: h.poster || '',
+                        sources: [{
+                            site_key: h.site_key,
+                            vod_id: h.vod_id,
+                            vod_name: h.name,
+                            latency: 999
+                        }]
+                    };
+                    this.openDetail(fallback);
+                },
+                clearWatchUrl() {
+                    try {
+                        if (!new URLSearchParams(location.search).has('watch')) return;
+                        history.replaceState({}, '', location.pathname + (location.hash || ''));
+                    } catch (e) { }
+                },
+                async restoreWatchFromUrl() {
+                    let params;
+                    try {
+                        params = new URLSearchParams(location.search);
+                    } catch (e) { return; }
+                    const watchName = params.get('watch');
+                    if (!watchName) return;
+                    const epRaw = params.get('ep');
+                    let epParsed = null;
+                    if (epRaw !== null && epRaw !== '') {
+                        const n = parseInt(epRaw, 10);
+                        if (!Number.isNaN(n) && n >= 0) epParsed = n;
+                    }
+                    const site = params.get('site');
+                    const vid = params.get('vid');
+                    if (site && vid) {
+                        this.keyword = watchName;
+                        this.searched = true;
+                        this.pendingEpisodeIndex = epParsed;
+                        await this.doSearch();
+                        await this.$nextTick();
+                        const g = this.groupedList.find((x) => x.name === watchName);
+                        if (g) {
+                            this.openDetail(g, { site_key: site, vod_id: vid });
+                            return;
+                        }
+                        const fallback = {
+                            name: watchName,
+                            pic: '',
+                            sources: [{
+                                site_key: site,
+                                vod_id: vid,
+                                vod_name: watchName,
+                                latency: 999
+                            }]
+                        };
+                        this.openDetail(fallback);
+                        return;
+                    }
+                    this.keyword = watchName;
+                    this.searched = true;
+                    await this.doSearch();
+                    await this.$nextTick();
+                    const g = this.groupedList.find((x) => x.name === watchName);
+                    if (g) {
+                        this.pendingEpisodeIndex = epParsed;
+                        this.openDetail(g);
+                    } else this.clearWatchUrl();
+                },
                 teardownVideoSkip() {
                     if (this._skipCleanup) {
                         this._skipCleanup();
@@ -680,6 +906,7 @@
                                 if (found.poster_path) {
                                     this.imageMap[name] = `${TMDB_IMG_URL}${found.poster_path}`;
                                     this.fallbackMap[name] = false;
+                                    this.patchWatchHistoryPoster(name);
                                 }
                             }
                         }).catch(() => { });
@@ -708,7 +935,11 @@
                     } catch (e) { }
                     this.loading = false;
                 },
-                openDetail(group) {
+                /**
+                 * @param preferredSource 可选；从地址栏恢复时指定线路，否则默认第一条
+                 */
+                openDetail(group, preferredSource = null) {
+                    this.currentSource = null;
                     this.currentGroup = group;
                     this.showDetail = true;
                     this.loadSkipSettings();
@@ -719,11 +950,20 @@
                             .then(data => { source.latency = data.latency; });
                     });
                     let best = group.sources[0];
+                    if (preferredSource && group.sources?.length) {
+                        const found = group.sources.find(
+                            (s) => s.site_key === preferredSource.site_key
+                                && String(s.vod_id) === String(preferredSource.vod_id)
+                        );
+                        if (found) best = found;
+                    }
+                    this.$nextTick(() => this.syncWatchUrlFromGroup());
                     this.switchSource(best);
                 },
                 closeDetail() {
                     this.teardownVideoSkip();
                     this.showDetail = false;
+                    this.clearWatchUrl();
                     if (dp) dp.pause();
                 },
                 async switchSource(source) {
@@ -734,6 +974,7 @@
                         if (data.list && data.list.length > 0) this.parseEpisodes(data.list[0].vod_play_url);
                     } catch (e) { }
                     this.loadingDetail = false;
+                    if (this.showDetail) this.syncWatchUrlFromGroup();
                 },
                 parseEpisodes(urlStr) {
                     let playSource = urlStr;
@@ -745,7 +986,12 @@
                         const p = ep.split('$');
                         return { name: p.length > 1 ? p[0] : '正片', url: p.length > 1 ? p[1] : p[0] };
                     });
-                    if (this.episodeList.length > 0) this.play(this.episodeList[0].url);
+                    let startIdx = 0;
+                    if (this.pendingEpisodeIndex != null && this.episodeList.length > 0) {
+                        startIdx = Math.min(Math.max(0, this.pendingEpisodeIndex), this.episodeList.length - 1);
+                    }
+                    this.pendingEpisodeIndex = null;
+                    if (this.episodeList.length > 0) this.play(this.episodeList[startIdx].url);
                 },
                 play(url) {
                     this.teardownVideoSkip();
@@ -756,7 +1002,10 @@
                     });
                     else dp.switchVideo({ url: url, type: 'hls' });
                     dp.play();
-                    this.$nextTick(() => this.setupVideoSkip());
+                    this.$nextTick(() => {
+                        this.setupVideoSkip();
+                        this.syncWatchUrlFromGroup();
+                    });
                 },
                 
                 // 热榜左右滚动功能
@@ -799,19 +1048,15 @@
                 
                 // 初始化所有热榜导航按钮状态
                 initHotRowNavStates() {
-                    const sections = ['movie', 'tv', 'cn', 'krjp'];
+                    const sections = ['history', 'movie', 'tv', 'cn', 'krjp'];
                     sections.forEach(section => {
                         const hotRow = document.querySelector(`[data-section="${section}"]`);
-                        if (hotRow) {
-                            // 监听滚动事件更新按钮状态
+                        if (hotRow && !hotRow.dataset.navBound) {
+                            hotRow.dataset.navBound = '1';
                             hotRow.addEventListener('scroll', () => {
                                 this.updateNavButtons(hotRow, section);
                             });
-                            
-                            // 初始状态
                             this.updateNavButtons(hotRow, section);
-                            
-                            // 窗口大小改变时重新计算
                             window.addEventListener('resize', () => {
                                 this.updateNavButtons(hotRow, section);
                             });
