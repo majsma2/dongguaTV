@@ -499,11 +499,14 @@
                     autoPlayNext: true,
                     /** 从地址栏 ?ep= 恢复选集时暂存，parseEpisodes 消费后置 null */
                     pendingEpisodeIndex: null,
-                    watchHistoryList: []
+                    watchHistoryList: [],
+                    /** 播放倍速，与 DPlayer / video.playbackRate 同步，持久化到 localStorage */
+                    savedPlaybackRate: 1
                 }
             },
             mounted() {
                 this.loadAutoPlayNextPref();
+                this.loadPlaybackRatePref();
                 this.loadWatchHistory();
                 window.addEventListener('scroll', () => { this.scrollY = window.scrollY; });
                 this.fetchHero();
@@ -624,6 +627,29 @@
                 persistAutoPlayNext() {
                     try {
                         localStorage.setItem('dongguaTV_auto_next', this.autoPlayNext ? '1' : '0');
+                    } catch (e) { }
+                },
+                loadPlaybackRatePref() {
+                    try {
+                        const v = localStorage.getItem('dongguaTV_playback_rate');
+                        if (v == null || v === '') return;
+                        const n = parseFloat(v);
+                        if (!Number.isNaN(n) && n >= 0.25 && n <= 4) this.savedPlaybackRate = n;
+                    } catch (e) { }
+                },
+                persistPlaybackRate(rate) {
+                    if (!Number.isFinite(rate) || rate < 0.25 || rate > 4) return;
+                    this.savedPlaybackRate = rate;
+                    try {
+                        localStorage.setItem('dongguaTV_playback_rate', String(rate));
+                    } catch (e) { }
+                },
+                applyPlaybackRateToVideo() {
+                    if (!dp || !dp.video) return;
+                    const r = this.savedPlaybackRate;
+                    if (!Number.isFinite(r) || r < 0.25 || r > 4) return;
+                    try {
+                        dp.video.playbackRate = r;
                     } catch (e) { }
                 },
                 /** 地址栏记录当前剧集，刷新后可 restoreWatchFromUrl 恢复 */
@@ -854,11 +880,25 @@
                             }
                         }
                     };
+                    const onRateChange = () => {
+                        const r = video.playbackRate;
+                        if (Number.isFinite(r) && r >= 0.25 && r <= 4 && Math.abs(r - self.savedPlaybackRate) > 0.001) {
+                            self.persistPlaybackRate(r);
+                        }
+                    };
+                    const onLoadedData = () => {
+                        self.applyPlaybackRateToVideo();
+                    };
                     video.addEventListener('timeupdate', onTimeUpdate);
                     video.addEventListener('ended', onEnded);
+                    video.addEventListener('ratechange', onRateChange);
+                    video.addEventListener('loadeddata', onLoadedData);
+                    self.applyPlaybackRateToVideo();
                     this._skipCleanup = () => {
                         video.removeEventListener('timeupdate', onTimeUpdate);
                         video.removeEventListener('ended', onEnded);
+                        video.removeEventListener('ratechange', onRateChange);
+                        video.removeEventListener('loadeddata', onLoadedData);
                     };
                 },
 
@@ -1004,7 +1044,9 @@
                     dp.play();
                     this.$nextTick(() => {
                         this.setupVideoSkip();
+                        this.applyPlaybackRateToVideo();
                         this.syncWatchUrlFromGroup();
+                        requestAnimationFrame(() => this.applyPlaybackRateToVideo());
                     });
                 },
                 
