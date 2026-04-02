@@ -284,7 +284,12 @@
                     </div>
                     <!-- 选集列表 (全宽网格) -->
                     <div>
-                        <div class="panel-title">选集播放</div>
+                        <div class="panel-title ep-panel-head">
+                            <span>选集播放</span>
+                            <label v-if="episodeList.length > 1" class="skip-check auto-next-check">
+                                <input type="checkbox" v-model="autoPlayNext" @change="persistAutoPlayNext"> 播放结束自动下一集
+                            </label>
+                        </div>
                         <div v-if="loadingDetail" class="text-center py-5 text-muted"><i
                                 class="fas fa-spinner fa-spin"></i> 加载中...</div>
                         <div v-else class="ep-grid">
@@ -305,7 +310,7 @@
         const { createApp, reactive } = Vue;
         // 使用你的反代域名
         const MY_PROXY = "https://daili.smdhb.com";
-        const TMDB_API_KEY = "替换成你自己的KEY"; 
+        const TMDB_API_KEY = "f632b3d68d39f7216397255b71798c10"; 
 
         // API地址修改为你的反代
         const TMDB_BASE_URL = `${MY_PROXY}/3`;
@@ -460,10 +465,12 @@
                     episodeList: [], currentUrl: '', loadingDetail: false,
                     imageMap: {}, fallbackMap: {}, heroList: [], scrollY: 0,
                     hotList: [],
-                    skipIntroEnd: 0, skipOutroFromEnd: 0, skipAutoIntro: true, skipAutoOutro: true
+                    skipIntroEnd: 0, skipOutroFromEnd: 0, skipAutoIntro: true, skipAutoOutro: true,
+                    autoPlayNext: true
                 }
             },
             mounted() {
+                this.loadAutoPlayNextPref();
                 window.addEventListener('scroll', () => { this.scrollY = window.scrollY; });
                 this.fetchHero();
                 this.fetchAllLists();
@@ -572,6 +579,18 @@
                     this.skipOutroFromEnd = 0;
                     this.persistSkipSettings();
                 },
+                loadAutoPlayNextPref() {
+                    try {
+                        const v = localStorage.getItem('dongguaTV_auto_next');
+                        if (v === null) this.autoPlayNext = true;
+                        else this.autoPlayNext = v === '1';
+                    } catch (e) { }
+                },
+                persistAutoPlayNext() {
+                    try {
+                        localStorage.setItem('dongguaTV_auto_next', this.autoPlayNext ? '1' : '0');
+                    } catch (e) { }
+                },
                 teardownVideoSkip() {
                     if (this._skipCleanup) {
                         this._skipCleanup();
@@ -584,6 +603,12 @@
                     const video = dp.video;
                     const self = this;
                     const state = { introDone: false, outroDone: false };
+                    const onEnded = () => {
+                        if (!self.autoPlayNext || !self.episodeList.length) return;
+                        const idx = self.episodeList.findIndex((ep) => ep.url === self.currentUrl);
+                        if (idx < 0 || idx >= self.episodeList.length - 1) return;
+                        self.play(self.episodeList[idx + 1].url);
+                    };
                     const onTimeUpdate = () => {
                         const introEnd = self.skipIntroEnd;
                         const outroFromEnd = self.skipOutroFromEnd;
@@ -604,8 +629,10 @@
                         }
                     };
                     video.addEventListener('timeupdate', onTimeUpdate);
+                    video.addEventListener('ended', onEnded);
                     this._skipCleanup = () => {
                         video.removeEventListener('timeupdate', onTimeUpdate);
+                        video.removeEventListener('ended', onEnded);
                     };
                 },
 

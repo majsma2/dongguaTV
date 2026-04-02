@@ -632,6 +632,18 @@ body {
     justify-content: space-between;
 }
 
+.panel-title.ep-panel-head {
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.panel-title.ep-panel-head .auto-next-check {
+    text-transform: none;
+    letter-spacing: normal;
+    font-weight: 500;
+    margin-left: auto;
+}
+
 .source-list {
     display: flex;
     flex-wrap: wrap;
