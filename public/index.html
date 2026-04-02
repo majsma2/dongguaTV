@@ -48,7 +48,7 @@
             <a href="/admin.html" target="_blank" style="color:#888; text-decoration:none; font-size:12px;">Admin</a>
         </nav>
 
-        <!-- 1. Hero Carousel -->
+        <!-- 1. Hero：无数据时 #heroCarousel 仍占 min-height（见 style.css），避免搜索区被 margin-top:-35px 顶到导航下 -->
         <div id="heroCarousel" class="carousel slide carousel-fade" data-bs-ride="carousel" data-bs-interval="6000">
             <div class="carousel-inner" v-if="heroList.length > 0">
                 <div class="carousel-item" v-for="(item, index) in heroList" :key="index"
@@ -254,6 +254,34 @@
                         </div>
                     </div>
 
+                    <!-- 跳过片头片尾（按剧名保存，全剧各集通用） -->
+                    <div class="skip-panel" v-if="!loadingDetail && episodeList.length > 0">
+                        <div class="panel-title">
+                            <span>跳过片头 / 片尾 <small class="text-muted fw-normal">（本地保存 · 适用于本剧全部集数）</small></span>
+                        </div>
+                        <p class="skip-hint">播放中拖动进度条：拖到<strong>片头刚结束</strong>或<strong>片尾（字幕）刚开始</strong>处，再点下方按钮记录。</p>
+                        <div class="skip-toggles mb-3">
+                            <label class="skip-check"><input type="checkbox" v-model="skipAutoIntro" @change="persistSkipSettings"> 自动跳过片头</label>
+                            <label class="skip-check"><input type="checkbox" v-model="skipAutoOutro" @change="persistSkipSettings"> 自动跳过片尾</label>
+                        </div>
+                        <div class="skip-actions">
+                            <button type="button" class="btn-skip-record" @click="recordIntroEnd">
+                                <i class="fas fa-forward"></i> 记录片头结束时间
+                            </button>
+                            <button type="button" class="btn-skip-record" @click="recordOutroFromEnd">
+                                <i class="fas fa-step-forward"></i> 记录片尾起点
+                            </button>
+                        </div>
+                        <div class="skip-status">
+                            <span v-if="skipIntroEnd > 0">片头：跳过前 <strong>{{ formatSkipTime(skipIntroEnd) }}</strong>
+                                <button type="button" class="btn-skip-clear" @click="clearSkipIntro">清除</button></span>
+                            <span v-else class="text-muted">片头：未记录</span>
+                            <span class="mx-2 text-muted">|</span>
+                            <span v-if="skipOutroFromEnd > 0">片尾：跳过最后 <strong>{{ formatSkipTime(skipOutroFromEnd) }}</strong>
+                                <button type="button" class="btn-skip-clear" @click="clearSkipOutro">清除</button></span>
+                            <span v-else class="text-muted">片尾：未记录</span>
+                        </div>
+                    </div>
                     <!-- 选集列表 (全宽网格) -->
                     <div>
                         <div class="panel-title">选集播放</div>
@@ -431,7 +459,8 @@
                     showDetail: false, currentGroup: null, currentSource: null,
                     episodeList: [], currentUrl: '', loadingDetail: false,
                     imageMap: {}, fallbackMap: {}, heroList: [], scrollY: 0,
-                    hotList: []
+                    hotList: [],
+                    skipIntroEnd: 0, skipOutroFromEnd: 0, skipAutoIntro: true, skipAutoOutro: true
                 }
             },
             mounted() {
@@ -471,6 +500,113 @@
                     if (videoEl.remote && videoEl.remote.state !== 'disconnected') videoEl.remote.prompt().catch(() => { });
                     else if (videoEl.webkitShowPlaybackTargetPicker) videoEl.webkitShowPlaybackTargetPicker();
                     else alert('您的浏览器不支持网页直接投屏，请使用浏览器菜单中的投射功能。');
+                },
+
+                skipStorageKey() {
+                    if (!this.currentGroup?.name) return '';
+                    return 'dongguaTV_skip_v1_' + encodeURIComponent(this.currentGroup.name);
+                },
+                loadSkipSettings() {
+                    const key = this.skipStorageKey();
+                    if (!key) return;
+                    try {
+                        const raw = localStorage.getItem(key);
+                        if (!raw) {
+                            this.skipIntroEnd = 0;
+                            this.skipOutroFromEnd = 0;
+                            this.skipAutoIntro = true;
+                            this.skipAutoOutro = true;
+                            return;
+                        }
+                        const o = JSON.parse(raw);
+                        this.skipIntroEnd = typeof o.introEnd === 'number' && o.introEnd > 0 ? o.introEnd : 0;
+                        this.skipOutroFromEnd = typeof o.outroFromEnd === 'number' && o.outroFromEnd > 0 ? o.outroFromEnd : 0;
+                        this.skipAutoIntro = o.autoIntro !== false;
+                        this.skipAutoOutro = o.autoOutro !== false;
+                    } catch (e) {
+                        this.skipIntroEnd = 0;
+                        this.skipOutroFromEnd = 0;
+                    }
+                },
+                persistSkipSettings() {
+                    const key = this.skipStorageKey();
+                    if (!key) return;
+                    localStorage.setItem(key, JSON.stringify({
+                        introEnd: this.skipIntroEnd,
+                        outroFromEnd: this.skipOutroFromEnd,
+                        autoIntro: this.skipAutoIntro,
+                        autoOutro: this.skipAutoOutro
+                    }));
+                },
+                formatSkipTime(sec) {
+                    if (!sec || sec < 0) return '0:00';
+                    const s = Math.floor(sec % 60);
+                    const m = Math.floor(sec / 60) % 60;
+                    const h = Math.floor(sec / 3600);
+                    const pad = (n) => (n < 10 ? '0' : '') + n;
+                    return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+                },
+                recordIntroEnd() {
+                    const v = dp && dp.video;
+                    if (!v) return alert('请先开始播放');
+                    const t = v.currentTime;
+                    if (t < 1) return alert('请将进度拖到片头结束之后，再记录');
+                    this.skipIntroEnd = t;
+                    this.persistSkipSettings();
+                },
+                recordOutroFromEnd() {
+                    const v = dp && dp.video;
+                    if (!v) return alert('请先开始播放');
+                    const d = v.duration;
+                    if (!d || !isFinite(d)) return alert('无法读取视频总时长，请稍等再试');
+                    const remain = d - v.currentTime;
+                    if (remain < 2) return alert('请拖到片尾字幕刚开始的位置再记录');
+                    this.skipOutroFromEnd = remain;
+                    this.persistSkipSettings();
+                },
+                clearSkipIntro() {
+                    this.skipIntroEnd = 0;
+                    this.persistSkipSettings();
+                },
+                clearSkipOutro() {
+                    this.skipOutroFromEnd = 0;
+                    this.persistSkipSettings();
+                },
+                teardownVideoSkip() {
+                    if (this._skipCleanup) {
+                        this._skipCleanup();
+                        this._skipCleanup = null;
+                    }
+                },
+                setupVideoSkip() {
+                    this.teardownVideoSkip();
+                    if (!dp || !dp.video || !this.currentGroup) return;
+                    const video = dp.video;
+                    const self = this;
+                    const state = { introDone: false, outroDone: false };
+                    const onTimeUpdate = () => {
+                        const introEnd = self.skipIntroEnd;
+                        const outroFromEnd = self.skipOutroFromEnd;
+                        if (self.skipAutoIntro && introEnd > 0 && !state.introDone) {
+                            if (video.currentTime < introEnd - 0.12) {
+                                state.introDone = true;
+                                video.currentTime = introEnd;
+                            } else {
+                                state.introDone = true;
+                            }
+                        }
+                        if (self.skipAutoOutro && outroFromEnd > 0 && video.duration && isFinite(video.duration) && !state.outroDone) {
+                            const cut = video.duration - outroFromEnd;
+                            if (video.currentTime >= cut - 0.2) {
+                                state.outroDone = true;
+                                video.currentTime = Math.max(0, video.duration - 0.15);
+                            }
+                        }
+                    };
+                    video.addEventListener('timeupdate', onTimeUpdate);
+                    this._skipCleanup = () => {
+                        video.removeEventListener('timeupdate', onTimeUpdate);
+                    };
                 },
 
                 fetchAllLists() {
@@ -548,6 +684,7 @@
                 openDetail(group) {
                     this.currentGroup = group;
                     this.showDetail = true;
+                    this.loadSkipSettings();
                     this.currentGroup.sources.forEach(source => {
                         source.latency = '...';
                         fetch(`/api/check?key=${source.site_key}`)
@@ -557,7 +694,11 @@
                     let best = group.sources[0];
                     this.switchSource(best);
                 },
-                closeDetail() { this.showDetail = false; if (dp) dp.pause(); },
+                closeDetail() {
+                    this.teardownVideoSkip();
+                    this.showDetail = false;
+                    if (dp) dp.pause();
+                },
                 async switchSource(source) {
                     this.currentSource = source; this.loadingDetail = true; this.episodeList = [];
                     try {
@@ -580,6 +721,7 @@
                     if (this.episodeList.length > 0) this.play(this.episodeList[0].url);
                 },
                 play(url) {
+                    this.teardownVideoSkip();
                     this.currentUrl = url;
                     if (!dp) dp = new DPlayer({
                         container: document.getElementById('dplayer'),
@@ -587,6 +729,7 @@
                     });
                     else dp.switchVideo({ url: url, type: 'hls' });
                     dp.play();
+                    this.$nextTick(() => this.setupVideoSkip());
                 },
                 
                 // 热榜左右滚动功能
