@@ -398,6 +398,66 @@ body {
     z-index: 10;
 }
 
+/* 观看记录 */
+.watch-history-section {
+    margin-top: 4px;
+}
+
+.history-card .history-remove {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    z-index: 12;
+    width: 26px;
+    height: 26px;
+    border: none;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.65);
+    color: #ccc;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.history-card:hover .history-remove {
+    opacity: 1;
+}
+
+.history-card .history-remove:hover {
+    background: var(--accent);
+    color: #fff;
+}
+
+.history-ep-badge {
+    position: absolute;
+    bottom: 6px;
+    left: 6px;
+    right: 6px;
+    background: rgba(0, 0, 0, 0.78);
+    color: #eee;
+    font-size: 11px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+}
+
+.history-sub {
+    color: #888 !important;
+    font-size: 11px !important;
+}
+
+.history-poster-fallback {
+    min-height: 100%;
+}
+
 .poster-wrap {
     width: 100%;
     aspect-ratio: 2/3;
