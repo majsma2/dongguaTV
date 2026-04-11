@@ -711,6 +711,11 @@ body {
     margin-bottom: 30px;
 }
 
+.rate-presets .source-pill {
+    justify-content: center;
+    min-width: 4.25rem;
+}
+
 .source-pill {
     padding: 8px 16px;
     border-radius: 6px;

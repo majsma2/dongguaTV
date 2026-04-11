@@ -268,6 +268,17 @@
 
                 <!-- 3. 底部：控制面板 -->
                 <div class="controls-area">
+                    <!-- 播放速度 -->
+                    <div class="mb-4">
+                        <div class="panel-title">播放速度</div>
+                        <div class="source-list rate-presets">
+                            <div v-for="opt in playbackRatePresets" :key="opt.rate" class="source-pill"
+                                :class="{ active: isPlaybackRatePresetActive(opt.rate) }"
+                                @click="selectPlaybackRate(opt.rate)">
+                                <span>{{ opt.label }}</span>
+                            </div>
+                        </div>
+                    </div>
                     <!-- 线路选择 -->
                     <div class="mb-4">
                         <div class="panel-title">切换线路 (真实测速)</div>
@@ -501,7 +512,16 @@
                     pendingEpisodeIndex: null,
                     watchHistoryList: [],
                     /** 播放倍速，与 DPlayer / video.playbackRate 同步，持久化到 localStorage */
-                    savedPlaybackRate: 1
+                    savedPlaybackRate: 1,
+                    /** 播放页倍速按钮（与切换线路上方展示顺序一致） */
+                    playbackRatePresets: [
+                        { rate: 0.5, label: '0.5' },
+                        { rate: 0.75, label: '0.75' },
+                        { rate: 1, label: '正常' },
+                        { rate: 1.25, label: '1.25' },
+                        { rate: 1.5, label: '1.5' },
+                        { rate: 2, label: '2' }
+                    ]
                 }
             },
             mounted() {
@@ -643,6 +663,16 @@
                     try {
                         localStorage.setItem('dongguaTV_playback_rate', String(rate));
                     } catch (e) { }
+                },
+                isPlaybackRatePresetActive(rate) {
+                    return Number.isFinite(this.savedPlaybackRate)
+                        && Number.isFinite(rate)
+                        && Math.abs(this.savedPlaybackRate - rate) < 0.001;
+                },
+                selectPlaybackRate(rate) {
+                    if (!Number.isFinite(rate) || rate < 0.25 || rate > 4) return;
+                    this.persistPlaybackRate(rate);
+                    this.applyPlaybackRateToVideo();
                 },
                 applyPlaybackRateToVideo() {
                     if (!dp || !dp.video) return;
