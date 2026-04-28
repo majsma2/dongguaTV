@@ -349,7 +349,7 @@
         const { createApp, reactive } = Vue;
         // 使用你的反代域名
         const MY_PROXY = "https://daili.smdhb.com";
-        const TMDB_API_KEY = "替换成你自己的KEY"; 
+        const TMDB_API_KEY = "替换成你自己的KEY";
 
         // API地址修改为你的反代
         const TMDB_BASE_URL = `${MY_PROXY}/3`;
@@ -506,6 +506,8 @@
                     episodeList: [], currentUrl: '', loadingDetail: false,
                     imageMap: {}, fallbackMap: {}, heroList: [], scrollY: 0,
                     hotList: [],
+                    /** site_key -> 站点名，用于历史直达等场景展示友好名称 */
+                    siteNameMap: {},
                     skipIntroEnd: 0, skipOutroFromEnd: 0, skipAutoIntro: true, skipAutoOutro: true,
                     autoPlayNext: true,
                     /** 从地址栏 ?ep= 恢复选集时暂存，parseEpisodes 消费后置 null */
@@ -528,6 +530,7 @@
                 this.loadAutoPlayNextPref();
                 this.loadPlaybackRatePref();
                 this.loadWatchHistory();
+                this.loadSiteNameMap();
                 window.addEventListener('scroll', () => { this.scrollY = window.scrollY; });
                 this.fetchHero();
                 this.fetchAllLists();
@@ -541,23 +544,107 @@
             },
             computed: {
                 groupedList() {
+                    const arr = this.buildGroupsFromRawList(this.rawList);
+                    const isDefault = (url) => !url || url.includes('mac_default') || url.includes('nopic');
+                    arr.forEach((g) => {
+                        if (isDefault(g.pic)) this.handleImgError(g.name);
+                    });
+                    return arr;
+                }
+            },
+            methods: {
+                isDefaultPoster(url) {
+                    return !url || url.includes('mac_default') || url.includes('nopic');
+                },
+                async loadSiteNameMap() {
+                    try {
+                        const res = await fetch('/api/admin/sites');
+                        const sites = await res.json();
+                        const map = {};
+                        (sites || []).forEach((s) => {
+                            if (s && s.key) map[s.key] = s.name || s.key;
+                        });
+                        this.siteNameMap = map;
+                    } catch (e) {
+                        this.siteNameMap = {};
+                    }
+                },
+                friendlySiteName(site_key, fallbackName = '') {
+                    if (!site_key) return fallbackName || '';
+                    return this.siteNameMap?.[site_key] || fallbackName || site_key;
+                },
+                /** 与 groupedList 聚合规则一致；不触发 handleImgError（供静默搜索合并等复用） */
+                buildGroupsFromRawList(list) {
                     const groups = {};
-                    this.rawList.forEach(item => {
+                    (list || []).forEach((item) => {
                         const name = item.vod_name;
                         if (!groups[name]) groups[name] = { name: name, pic: item.vod_pic, sources: [] };
-                        const isDefault = (url) => !url || url.includes('mac_default') || url.includes('nopic');
-                        if (isDefault(groups[name].pic) && !isDefault(item.vod_pic)) groups[name].pic = item.vod_pic;
-                        if (isDefault(groups[name].pic)) this.handleImgError(name);
-
+                        if (this.isDefaultPoster(groups[name].pic) && !this.isDefaultPoster(item.vod_pic)) {
+                            groups[name].pic = item.vod_pic;
+                        }
                         groups[name].sources.push({
                             ...item,
                             latency: item.latency || 999
                         });
                     });
                     return Object.values(groups).sort((a, b) => b.sources.length - a.sources.length);
-                }
-            },
-            methods: {
+                },
+                attachSourceLatencyProbe(source) {
+                    if (!source || !source.site_key) return;
+                    source.latency = '...';
+                    fetch(`/api/check?key=${source.site_key}`)
+                        .then((res) => res.json())
+                        .then((data) => { source.latency = data.latency; });
+                },
+                async fetchSearchListSilently(wd) {
+                    if (!wd) return [];
+                    try {
+                        const res = await fetch(`/api/search?wd=${encodeURIComponent(wd)}`);
+                        const data = await res.json();
+                        return data.list || [];
+                    } catch (e) {
+                        return [];
+                    }
+                },
+                /** 直达播放后后台聚合搜索，把同名多源并入当前详情（不切换线路、不改 searched） */
+                async mergeAggregatedSourcesForWatchName(watchName) {
+                    if (!watchName) return;
+                    const list = await this.fetchSearchListSilently(watchName);
+                    const groups = this.buildGroupsFromRawList(list);
+                    const g = groups.find((x) => x.name === watchName);
+                    if (!g || !g.sources.length) return;
+                    if (!this.showDetail || !this.currentGroup || this.currentGroup.name !== watchName) return;
+
+                    if (!this.isDefaultPoster(g.pic) && this.isDefaultPoster(this.currentGroup.pic)) {
+                        this.currentGroup.pic = g.pic;
+                    }
+                    if (this.isDefaultPoster(this.currentGroup.pic)) this.handleImgError(watchName);
+
+                    const keyOf = (s) => `${s.site_key}\0${String(s.vod_id)}`;
+                    const enrichedByKey = new Map(g.sources.map((s) => [keyOf(s), s]));
+                    // 先补全已有源（包括当前播放源）缺失的字段：site_name 等
+                    for (const existing of this.currentGroup.sources) {
+                        const enriched = enrichedByKey.get(keyOf(existing));
+                        if (!enriched) continue;
+                        const keepLatency = existing.latency;
+                        Object.assign(existing, enriched);
+                        existing.latency = keepLatency;
+                    }
+                    const seen = new Set(this.currentGroup.sources.map(keyOf));
+                    for (const s of g.sources) {
+                        const k = keyOf(s);
+                        if (seen.has(k)) continue;
+                        seen.add(k);
+                        const ns = { ...s, latency: s.latency || 999 };
+                        this.currentGroup.sources.push(ns);
+                    }
+                    // 兜底：若后端没带 site_name（或历史直达临时值），用本地站点表补全
+                    this.currentGroup.sources.forEach((s) => {
+                        if (!s.site_name) s.site_name = this.friendlySiteName(s.site_key, s.site_key);
+                    });
+                    // 合并完成后，刷新全部线路测速（包含原始 fallback 与新增源）
+                    this.currentGroup.sources.forEach((s) => this.attachSourceLatencyProbe(s));
+                },
                 getLatencyClass(ms) { return ms < 500 ? 'dot-green' : (ms < 2000 ? 'dot-yellow' : 'dot-red'); },
                 castVideo() {
                     const videoEl = document.querySelector('.dplayer-video');
@@ -794,29 +881,22 @@
                         } catch (e) { }
                     }
                 },
-                async continueFromHistory(h) {
+                continueFromHistory(h) {
                     if (!h || !h.name) return;
                     this.keyword = h.name;
-                    this.searched = true;
                     this.pendingEpisodeIndex = typeof h.epIndex === 'number' ? h.epIndex : null;
-                    await this.doSearch();
-                    await this.$nextTick();
-                    const g = this.groupedList.find((x) => x.name === h.name);
-                    if (g) {
-                        this.openDetail(g, { site_key: h.site_key, vod_id: h.vod_id });
-                        return;
-                    }
-                    const fallback = {
+                    const group = {
                         name: h.name,
                         pic: h.poster || '',
                         sources: [{
                             site_key: h.site_key,
                             vod_id: h.vod_id,
+                            site_name: this.friendlySiteName(h.site_key, h.site_key),
                             vod_name: h.name,
                             latency: 999
                         }]
                     };
-                    this.openDetail(fallback);
+                    this.openDetail(group, { site_key: h.site_key, vod_id: h.vod_id }, { enrichWithSearch: true });
                 },
                 clearWatchUrl() {
                     try {
@@ -841,26 +921,19 @@
                     const vid = params.get('vid');
                     if (site && vid) {
                         this.keyword = watchName;
-                        this.searched = true;
                         this.pendingEpisodeIndex = epParsed;
-                        await this.doSearch();
-                        await this.$nextTick();
-                        const g = this.groupedList.find((x) => x.name === watchName);
-                        if (g) {
-                            this.openDetail(g, { site_key: site, vod_id: vid });
-                            return;
-                        }
                         const fallback = {
                             name: watchName,
                             pic: '',
                             sources: [{
                                 site_key: site,
                                 vod_id: vid,
+                                site_name: this.friendlySiteName(site, site),
                                 vod_name: watchName,
                                 latency: 999
                             }]
                         };
-                        this.openDetail(fallback);
+                        this.openDetail(fallback, { site_key: site, vod_id: vid }, { enrichWithSearch: true });
                         return;
                     }
                     this.keyword = watchName;
@@ -1007,18 +1080,14 @@
                 },
                 /**
                  * @param preferredSource 可选；从地址栏恢复时指定线路，否则默认第一条
+                 * @param options 可选；enrichWithSearch 为 true 时在后台搜索并合并多源到当前组
                  */
-                openDetail(group, preferredSource = null) {
+                openDetail(group, preferredSource = null, options = null) {
                     this.currentSource = null;
                     this.currentGroup = group;
                     this.showDetail = true;
                     this.loadSkipSettings();
-                    this.currentGroup.sources.forEach(source => {
-                        source.latency = '...';
-                        fetch(`/api/check?key=${source.site_key}`)
-                            .then(res => res.json())
-                            .then(data => { source.latency = data.latency; });
-                    });
+                    this.currentGroup.sources.forEach((source) => this.attachSourceLatencyProbe(source));
                     let best = group.sources[0];
                     if (preferredSource && group.sources?.length) {
                         const found = group.sources.find(
@@ -1029,6 +1098,9 @@
                     }
                     this.$nextTick(() => this.syncWatchUrlFromGroup());
                     this.switchSource(best);
+                    if (options && options.enrichWithSearch && group && group.name) {
+                        this.mergeAggregatedSourcesForWatchName(group.name);
+                    }
                 },
                 closeDetail() {
                     this.teardownVideoSkip();
